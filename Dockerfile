@@ -1,22 +1,46 @@
-FROM java:7
+FROM alpine as downloader
 
-ENV RELEASE_DATE 2017-04-23
-ENV H2DATA /h2-data
+ARG RELEASE_DATE
+ENV RELEASE_DATE=${RELEASE_DATE:-2019-10-14}
 
-RUN curl http://www.h2database.com/h2-$RELEASE_DATE.zip -o h2.zip \
-    && unzip h2.zip -d . \
-    && rm h2.zip
+WORKDIR /tmp
 
-RUN ln -s $(ls /h2/bin/*jar) /h2/bin/h2.jar
+RUN wget -O ./h2.zip https://www.h2database.com/h2-$RELEASE_DATE.zip  \
+    && unzip h2.zip -d ./
 
-RUN mkdir /docker-entrypoint-initdb.d
+FROM adoptopenjdk/openjdk11:alpine-jre
 
-VOLUME /h2-data
+ENV H2_DATA /h2-data
+ENV H2_USER h2
+ENV H2_GID 5000
+ENV H2_UID 5000
+ENV JAVA_OPTS "-Xms512m -Xmx1G"
+ENV JAVA_OPTS_JMX "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=9010 -Dcom.sun.management.jmxremote.rmi.port=9010 -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=host.docker.internal"
 
-EXPOSE 8082 9092
 
-COPY docker-entrypoint.sh /usr/local/bin/
-ENTRYPOINT ["docker-entrypoint.sh"]
+RUN addgroup -g ${H2_GID} ${H2_USER} \
+    && adduser --disabled-password \
+            --home /home/${H2_USER} \
+            --gecos "" \
+            --uid ${H2_UID} \
+            --ingroup ${H2_USER} \
+            --shell /bin/sh \
+            --no-create-home \
+              ${H2_USER}
 
-CMD java -cp /h2/bin/h2.jar org.h2.tools.Server \
-  -web -webAllowOthers -tcp -tcpAllowOthers -baseDir $H2DATA
+WORKDIR /h2
+COPY --from=downloader  /tmp/h2/bin ./bin
+RUN ln -s $(ls /h2/bin/*jar) /h2/bin/h2.jar \
+    && chown -R ${H2_USER}:${H2_USER} ./* \
+    && mkdir -p ${H2_DATA} \
+    && chown -R ${H2_USER}:${H2_USER} ${H2_DATA}
+
+USER h2
+
+VOLUME ${H2_DATA}
+
+EXPOSE 8082 9010 9092 
+
+CMD java ${JAVA_OPTS} ${JAVA_OPTS_JMX} \
+  -cp /h2/bin/h2.jar org.h2.tools.Server \
+  -web -webAllowOthers -tcp -tcpAllowOthers -ifNotExists -baseDir ${H2_DATA}
